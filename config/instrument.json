@@ -1,0 +1,40 @@
+{
+    "_comment": [
+        "Delta Force (三角洲行动) playable instrument - DEFAULT GUESS, needs in-game calibration.",
+        "Base row: Z X C V B N M ,  ->  do re mi fa sol la si do(upper octave)",
+        "Absolute pitches of the base row and the semitone values of the modifiers",
+        "are NOT assumptions baked into code - they live here so you can calibrate",
+        "them after testing in game.",
+        "",
+        "Two ways to define the mapping (note_map wins when present for a pitch):",
+        "  1. note_map: explicit  \"<midi number or name>\": [modifiers..., key]",
+        "     last element is the note key, everything before it is a modifier name.",
+        "  2. auto-generated from base_notes x modifier subsets using each",
+        "     modifier's 'semitones' offset.  Conflicts resolve to the combination",
+        "     with the fewest modifiers.",
+        "",
+        "Modifier inputs: 'mouse_left' | 'mouse_right' | 'mouse_middle' | any key name."
+    ],
+
+    "name": "delta_force_default",
+
+    "modifiers": {
+        "lower": { "input": "mouse_left",   "semitones": -12 },
+        "sharp": { "input": "mouse_middle", "semitones": 1 },
+        "upper": { "input": "mouse_right",  "semitones": 12 }
+    },
+
+    "base_notes": {
+        "C4": "z",
+        "D4": "x",
+        "E4": "c",
+        "F4": "v",
+        "G4": "b",
+        "A4": "n",
+        "B4": "m",
+        "C5": ","
+    },
+
+    "note_map": {
+    }
+}

@@ -1,0 +1,52 @@
+{
+    "_comment": "All tunable parameters. Times in seconds unless the key says _ms.",
+
+    "playback": {
+        "start_delay_sec": 5,
+        "min_key_hold_ms": 8,
+        "min_retrigger_gap_ms": 15,
+        "batch_inter_event_ms": 1,
+        "busy_wait_threshold_ms": 3,
+        "max_sleep_chunk_ms": 5,
+        "latency_compensation_ms": 0,
+        "_keyboard_mode": "scancode = DirectInput 扫描码(默认); vk = 虚拟键码(DF-Auto_Blois 对三角洲用的方式)。游戏收不到输入时切换试试",
+        "keyboard_mode": "scancode"
+    },
+
+    "target_window": {
+        "_comment": "演奏前自动激活的目标窗口。按进程名优先、窗口标题关键字其次匹配。auto_foreground=倒计时结束后自动把游戏切到前台。",
+        "title_keywords": ["三角洲行动", "三角洲", "Delta Force", "DeltaForce"],
+        "process_names": ["DeltaForceClient-Win64-Shipping.exe", "DeltaForceClient.exe", "DeltaForce.exe", "dfclient.exe"],
+        "auto_foreground": true
+    },
+
+    "melody": {
+        "min_note_duration": 0.08,
+        "pitch_smoothing_window": 5,
+        "confidence_threshold": 0.5,
+        "merge_gap": 0.05,
+        "pitch_change_threshold": 0.6,
+        "hop_seconds_override": null
+    },
+
+    "transposer": {
+        "search_range": 24,
+        "allow_octave_folding": true,
+        "allow_nearest_snap": true
+    },
+
+    "monophonic": {
+        "_comment": "At any moment only ONE note may sound (game instrument is monophonic). select: highest|lowest|velocity — which chord member survives.",
+        "enabled": true,
+        "select": "highest",
+        "cluster_window_ms": 40
+    },
+
+    "wsl": {
+        "distro": "Ubuntu-26.04",
+        "python": "~/dmp-melodia/bin/python",
+        "enabled": true
+    },
+
+    "output_dir": "output"
+}

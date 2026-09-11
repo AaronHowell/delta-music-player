@@ -1,0 +1,54 @@
+delta_music_player — third-party notices
+========================================
+
+This project adapts code from:
+
+pydirectinput
+  https://github.com/learncodebygaming/pydirectinput
+  MIT License, Copyright (c) 2020 Ben Johnson
+
+  Adapted in playback/win32_sendinput.py: Win32 SendInput structure
+  definitions, DirectInput scan-code table (Set-1 make codes), keyboard and
+  mouse event flag constants, and the down/up send primitives.
+
+  Original license text:
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+Design ideas (no code copied; both projects are GPL-3.0, which is why no code
+is copied) were studied from:
+
+  MeowField_AutoPiano — https://github.com/Tsundeer/MeowField_AutoPiano
+      absolute-timeline scheduling with origin shifting on pause, two-phase
+      wait (sleep + busy-wait), key depth reference counting, minimum key
+      hold, same-instant up-before-down ordering, 1 ms inter-event gaps in a
+      batch, release-all-keys on every exit path.
+
+  AutoMidiPlayer — https://github.com/Jed556/AutoMidiPlayer
+      instrument profile modelling, octave folding with nearest-playable
+      snapping for scale gaps, tempo-map preservation when filtering tracks,
+      melody track auto-selection heuristics.
+
+Runtime dependencies and their licenses:
+  mido (Apache-2.0), numpy (BSD-3), pytest (MIT),
+  basic-pitch (Apache-2.0, optional), onnxruntime (MIT, optional),
+  librosa/scipy/soundfile (BSD-style, optional),
+  demucs (MIT, optional), torch (BSD-3, optional),
+  essentia (AGPL-3.0 — used ONLY as a separate process inside WSL,
+  never linked into this program).
