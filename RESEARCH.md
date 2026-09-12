@@ -181,17 +181,18 @@ delta_music_player/
 7. **MELODIA 桥**：`wsl -d <distro> <venv_python> melodia_extract.py <audio> <out_json>`，Windows 路径自动转 `/mnt/c/...`；输出 `{hop_seconds, frames:[[time, freq, confidence],...]}`；Windows 侧 quantizer 完成后处理。essentia 不可用时给出清晰的安装指引而非崩溃。
 8. **Debug 能力**：任何音频输入都自动落盘 `output/<stem>_contour.json`（F0 轮廓）、`<stem>_notes.json`、`<stem>_melody.mid`（mido 写出，可用 DAW 检查）。
 
-### 6.4 MVP 阶段计划与当前状态
+### 6.4 MVP 阶段划分（实现路线）
 
-| Phase | 内容 | 状态 |
+| Phase | 内容 | 验证方式 |
 |---|---|---|
-| 1 | MIDI → NoteEvent → dry-run 打印 | ✅ 完成（tempo 变化/多轨/自动选轨测试全过）|
-| 2 | InstrumentProfile + Mapper + Transposer | ✅ 完成（自动生成+显式覆盖、±24 搜索、折叠、吸附）|
-| 3 | Win32 SendInput 后端 | ✅ 完成（scancode+鼠标；真实 F13 发送验证通过；游戏内实测用 tools/test_sendinput_manual.py）|
-| 4 | Scheduler + Player | ✅ 完成（假时钟单测 + 真实时钟 24s 演奏：mean +0.39ms / P95 +1.57ms / 最终漂移 +0.01ms）|
-| 5 | WSL MELODIA → quantizer → NoteEvent | ⏸ 基础设施完成并跑通（离线安装 essentia cp314、F0 轮廓桥、量化管线 21 项测试）；**按用户决定暂缓**——合成音上 MELODIA 输出不稳定（部分音符 conf=0），待真实歌曲调优 |
-| 6 | basic-pitch ONNX backend | ⏸ 暂缓（路线已验证可行：wheel 自带 nmp.onnx，onnxruntime cp314 可用，--no-deps 安装；代码未写）|
-| 7 | Demucs 可选前置 | ⏸ 暂缓（torch 2.14 cp314 Windows wheel 存在，可原生跑）|
+| 1 | MIDI → NoteEvent → dry-run 打印 | pytest（mido 构造 fixture：tempo 变化、多轨、tick→秒精确断言）|
+| 2 | InstrumentProfile + Mapper + Transposer | pytest（60→z、61→sharp+z、组合生成/显式覆盖、折叠、吸附）|
+| 3 | Win32 SendInput 后端 | mock 结构体断言 + 真实无害按键（F13）+ tools/test_sendinput_manual.py |
+| 4 | Scheduler + Player | pytest 假时钟（事件顺序/绝对时间轴/暂停平移/停止释放）+ 真实时钟演奏统计 |
+| 5 | WSL MELODIA → quantizer → NoteEvent | 合成 WAV 已知旋律 → 提取比对；quantizer 纯函数测试 |
+| 6 | basic-pitch ONNX backend | 同一音频对比两后端输出 |
+| 7 | Demucs 可选前置（Windows 原生 torch） | 有 demucs 则接线，无则清晰提示；不强依赖 |
 
-> 2026-09-11 用户决定：优先完成 MIDI → 演奏主线，音频（乐谱→MIDI）部分
-> 暂缓。Phase 1-4 已全部完成并验收。
+后续扩展（在 MVP 之上）：tkinter GUI（钢琴卷帘选段、MCI 试听、按键面板、
+目标窗口绑定与 UIPI 权限诊断）、单音化管线（music/monophonic.py）、
+选段截取（music/clip.py 与 --clip）。
