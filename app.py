@@ -32,7 +32,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     "(Delta Force instrument)",
     )
     p.add_argument("input", help="path to .mid / .mp3 / .wav / .flac")
-    p.add_argument("--backend", choices=["melodia", "basic_pitch"],
+    p.add_argument("--backend", choices=["melodia"],
                    default="melodia",
                    help="audio melody-extraction backend (audio input only)")
     p.add_argument("--instrument", default="config/instrument.json",

@@ -34,6 +34,7 @@ def get_backend(name: str, settings: Optional[dict] = None) -> AudioTranscriber:
         from audio.melodia_backend import MelodiaBackend
         return MelodiaBackend(settings.get("wsl", {}))
     if name == "basic_pitch":
-        from audio.basic_pitch_backend import BasicPitchBackend
-        return BasicPitchBackend()
+        raise ValueError(
+            "basic_pitch backend is planned but not implemented yet "
+            "(see RESEARCH.md); use --backend melodia")
     raise ValueError(f"unknown audio backend: {name!r}")
