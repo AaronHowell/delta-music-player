@@ -6,3 +6,10 @@ output/
 wsl_wheels/
 probes/
 *.wav
+
+# 本地个人素材与一次性分析工具（不入库）
+/*.png
+/父亲.mid
+/tools/extract_main_melody.py
+/tools/extract_midi_channel.py
+/tools/make_father_midi.py
