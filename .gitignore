@@ -13,3 +13,10 @@ probes/
 /tools/extract_main_melody.py
 /tools/extract_midi_channel.py
 /tools/make_father_midi.py
+/tools/bench_ui.py
+/tools/gui_smoke_test.py
+/tools/make_demo_midi.py
+/tools/make_demo_wav.py
+/tools/melodia_probe.py
+/tools/test_audition.py
+/samples/twinkle.mid
