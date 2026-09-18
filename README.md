@@ -125,10 +125,10 @@ python app.py <input.mid|mp3|wav|flac>
     [--keyboard-mode scancode|vk]  键盘事件模式
     [--start-delay S]         倒计时秒数
     [--backend melodia]       音频输入的主旋律提取后端（目前仅 melodia）
-    [--output-dir dir]        产物目录（默认 output/）
+    [--output-dir dir]        产物目录（默认 乐库/）
 ```
 
-产物（`output/`）：`<歌名>_notes.json`（每个音的时间/时值/音高/按键组合）、音频输入另有 `_contour.json`（F0 轮廓）与 `_melody.mid`（提取出的主旋律，可导入 DAW 核对）。
+产物（`乐库/`）：`<歌名>_notes.json`（每个音的时间/时值/音高/按键组合）、音频输入另有 `_contour.json`（F0 轮廓）与 `_melody.mid`（提取出的主旋律，可导入 DAW 核对）。
 
 示例：
 

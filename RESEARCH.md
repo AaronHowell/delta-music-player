@@ -162,7 +162,7 @@ delta_music_player/
     config/
         instrument.json        # 乐器键位映射（可编辑、可校准）
         settings.json          # 全部可调参数（阈值/间隔/延迟补偿/WSL 配置）
-    output/                    # xxx_notes.json / xxx_melody.mid / xxx_contour.json
+    乐库/                      # xxx_notes.json / xxx_melody.mid / xxx_contour.json
     tests/                     # pytest
     requirements.txt           # Windows 侧依赖（分层：core / audio / demucs）
     RESEARCH.md / README.md
@@ -179,7 +179,7 @@ delta_music_player/
 5. **时序统计**：每个 down 事件记录 expected/actual/latency，结束输出 mean / P95 / max。
 6. **输入后端可插拔**：`DryRunBackend`（打印 + 写 notes.json）/ `Win32SendInputBackend`；播放控制 Space=暂停、Esc=停止（msvcrt 非阻塞轮询，仅 Windows 控制台）。
 7. **MELODIA 桥**：`wsl -d <distro> <venv_python> melodia_extract.py <audio> <out_json>`，Windows 路径自动转 `/mnt/c/...`；输出 `{hop_seconds, frames:[[time, freq, confidence],...]}`；Windows 侧 quantizer 完成后处理。essentia 不可用时给出清晰的安装指引而非崩溃。
-8. **Debug 能力**：任何音频输入都自动落盘 `output/<stem>_contour.json`（F0 轮廓）、`<stem>_notes.json`、`<stem>_melody.mid`（mido 写出，可用 DAW 检查）。
+8. **Debug 能力**：任何音频输入都自动落盘 `乐库/<stem>_contour.json`（F0 轮廓）、`<stem>_notes.json`、`<stem>_melody.mid`（mido 写出，可用 DAW 检查）。
 
 ### 6.4 MVP 阶段划分（实现路线）
 

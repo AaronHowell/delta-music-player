@@ -1007,7 +1007,7 @@ class MidiPlayerApp:
             messagebox.showinfo("提示", "选中区间内没有音符")
             return
         stem = Path(self.path_var.get()).stem or "selection"
-        out_dir = self.base_dir / self.settings.get("output_dir", "output")
+        out_dir = self.base_dir / self.settings.get("output_dir", "乐库")
         out = out_dir / f"{stem}_sel_{sel[0]:.1f}-{sel[1]:.1f}.mid"
         write_midi(clipped, out)
         self._append_preview(f"已导出选中段: {out} ({len(clipped)} 音)")
@@ -1208,7 +1208,7 @@ class MidiPlayerApp:
             messagebox.showinfo("提示", "选中区间内没有音符")
             return
         self.stop_audition(quiet=True)        # release the previous temp file
-        tmp = (self.base_dir / self.settings.get("output_dir", "output")
+        tmp = (self.base_dir / self.settings.get("output_dir", "乐库")
                / "_audition.mid")
         try:
             write_midi(notes, tmp, program=0, track_name="audition piano")

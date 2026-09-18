@@ -53,7 +53,7 @@ WSL 网络正常时也可以直接在 WSL 里 `python3 -m venv ~/dmp-melodia &&
 python app.py song.mp3 --backend melodia --dry-run
 ```
 
-产物：`output/song_contour.json`（F0 轮廓）、`song_notes.json`、
+产物：`乐库/song_contour.json`（F0 轮廓）、`song_notes.json`、
 `song_melody.mid`（提取出的主旋律，可导入 DAW 核对）。
 
 ## 已知限制
