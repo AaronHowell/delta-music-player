@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """delta_music_player CLI.
 
-Phase 1: MIDI -> NoteEvent[] -> listing + 乐库/<stem>_notes.json
+Phase 1: MIDI -> NoteEvent[] -> listing + library/<stem>_notes.json
 Phase 2: + InstrumentProfile / auto-transpose / key-combination mapping
 Later phases add: SendInput playback (3/4), audio melody extraction (5-7).
 """
@@ -88,7 +88,7 @@ def main(argv=None) -> int:
         print(f"Input file not found: {in_path}", file=sys.stderr)
         return 2
 
-    out_dir = Path(args.output_dir or settings.get("output_dir", "乐库"))
+    out_dir = Path(args.output_dir or settings.get("output_dir", "library"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ---------------- load notes ----------------
