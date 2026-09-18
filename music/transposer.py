@@ -19,8 +19,9 @@ instrument/ imports.
 """
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from music.note_event import NoteEvent, sort_notes
 from music.pitch_utils import midi_to_name
@@ -40,12 +41,17 @@ def fold_into_range(pitch: int, lo: int, hi: int) -> int:
 
 def nearest_playable(pitch: int, playable_sorted: Sequence[int]) -> Tuple[int, int]:
     """Return (nearest pitch, distance).  Ties prefer the lower pitch."""
-    best, best_d = playable_sorted[0], abs(playable_sorted[0] - pitch)
-    for p in playable_sorted[1:]:
-        d = abs(p - pitch)
-        if d < best_d:
-            best, best_d = p, d
-    return best, best_d
+    i = bisect_left(playable_sorted, pitch)
+    if i == 0:
+        first = playable_sorted[0]
+        return first, first - pitch
+    if i >= len(playable_sorted):
+        last = playable_sorted[-1]
+        return last, pitch - last
+    lo, hi = playable_sorted[i - 1], playable_sorted[i]
+    if pitch - lo <= hi - pitch:
+        return lo, pitch - lo
+    return hi, hi - pitch
 
 
 @dataclass
@@ -118,20 +124,25 @@ def find_best_transpose(
         raise ValueError("empty playable pitch set")
     playable_sorted = sorted(playable_set)
     lo, hi = playable_sorted[0], playable_sorted[-1]
-    pitches = [n.pitch for n in notes]
+    # Score each candidate by pitch CLASS with multiplicity rather than by
+    # walking every note: 2*search_range+1 transpositions x <=128 distinct
+    # pitches instead of x note count (a 20k-note song went 240ms -> ~5ms).
+    counts: Dict[int, int] = {}
+    for n in notes:
+        counts[n.pitch] = counts.get(n.pitch, 0) + 1
 
     best_t, best_key = 0, None
     for t in range(-search_range, search_range + 1):
         direct = dropped = 0
-        for p in pitches:
+        for p, count in counts.items():
             action, _ = _classify(
                 p + t, playable_set, lo, hi,
                 allow_folding, allow_snap, max_snap, playable_sorted,
             )
             if action == "direct":
-                direct += 1
+                direct += count
             elif action == "dropped":
-                dropped += 1
+                dropped += count
         # lexicographic: direct max -> dropped min -> |t| min -> t min
         key = (direct, -dropped, -abs(t), -t)
         if best_key is None or key > best_key:

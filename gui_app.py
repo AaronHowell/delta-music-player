@@ -15,6 +15,19 @@ Piano roll controls:
 Playback runs in a worker thread; all Tk updates flow through a queue.
 Tkinter is stdlib — no new dependencies.
 
+Performance notes (a redraw is on the hot path of every mouse move):
+  * canvas items live in per-layer _ItemPool objects and are repositioned,
+    never deleted and recreated;
+  * the pools write to Tk only when a value actually changed, because Tk
+    repaints an item on *any* coords()/itemconfigure() call (~25 us each),
+    even a no-op one;
+  * repaints are coalesced per idle cycle, so a burst of motion events costs
+    one redraw;
+  * a whole-song view of a big MIDI aggregates notes per pixel column
+    (NOTE_BUDGET) instead of drawing one item per note;
+  * a rubber-band drag moves two dashed edges and nothing else;
+  * playback events collapse to one playhead/progress update per tick.
+
 Usage:  python gui_app.py
 """
 from __future__ import annotations
@@ -34,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from instrument.instrument_profile import InstrumentProfile
 from instrument.mapper import InstrumentMapper
 from midi.midi_loader import is_midi, load_midi
-from midi.midi_parser import parse_midi, _is_drum_track
+from midi.midi_parser import build_tempo_map, parse_midi, _is_drum_track
 from midi.midi_writer import write_midi
 from music.clip import clip_notes
 from music.note_event import summarize
@@ -54,6 +67,7 @@ from playback.window_target import (
 )
 
 MOD_CN = {"lower": "降调", "sharp": "半音", "upper": "升调"}
+LIT_BG = "#ffb347"          # key-panel lamp while an input is held
 MOUSE_CN = {"mouse_left": "鼠标左键", "mouse_right": "鼠标右键",
             "mouse_middle": "鼠标中键"}
 
@@ -61,6 +75,81 @@ MOUSE_CN = {"mouse_left": "鼠标左键", "mouse_right": "鼠标右键",
 # ==========================================================================
 # piano roll
 # ==========================================================================
+
+class _ItemPool:
+    """Reusable canvas items for one redraw layer.
+
+    A redraw takes the items it needs, repositions them and hides the
+    leftover tail — instead of ``delete("all")`` + recreate.
+
+    It also remembers each item's geometry and options and only writes to Tk
+    when something actually changed.  That matters more than the recycling:
+    Tk marks an item for repaint on *any* ``coords()``/``itemconfigure()``
+    call, even one that writes back the value it already had — measured at
+    ~25 us of repaint per item, so a redraw that changed nothing used to cost
+    a full canvas repaint (~26 ms for 900 items) and now costs nothing.
+    """
+
+    __slots__ = ("_canvas", "_make", "items", "geo", "opts", "used", "shown",
+                 "grew")
+
+    def __init__(self, canvas: tk.Canvas, make):
+        self._canvas = canvas
+        self._make = make
+        self.items: list[int] = []
+        self.geo: list = []    # last coords written per item (None = never)
+        self.opts: list = []   # last options written per item
+        self.used = 0          # items taken in the current redraw
+        self.shown = 0         # items visible after the previous redraw
+        self.grew = False      # created items this redraw (stacking changed)
+
+    def begin(self) -> None:
+        self.used = 0
+
+    def precreate(self, n: int = 1) -> None:
+        """Create and hide n items now, so they stack *below* anything the
+        canvas creates later (items paint in creation order)."""
+        canvas = self._canvas
+        while len(self.items) < n:
+            item = self._make()
+            canvas.itemconfigure(item, state="hidden")
+            self.items.append(item)
+            self.geo.append(None)
+            self.opts.append({})
+
+    def place(self, *xy):
+        """Take the next item and give it these coords -> its frame handle."""
+        i = self.used
+        self.used = i + 1
+        items, geo = self.items, self.geo
+        if i < len(items):
+            if i >= self.shown:                # was hidden: bring it back
+                self._canvas.itemconfigure(items[i], state="normal")
+        else:
+            items.append(self._make())
+            geo.append(None)
+            self.opts.append({})
+            self.grew = True
+        if geo[i] != xy:
+            self._canvas.coords(items[i], *xy)
+            geo[i] = xy
+        return i
+
+    def style(self, i: int, **opts) -> None:
+        """Set item options, skipping the ones that already hold that value."""
+        cur = self.opts[i]
+        changed = {k: v for k, v in opts.items() if cur.get(k) != v}
+        if changed:
+            cur.update(changed)
+            self._canvas.itemconfigure(self.items[i], **changed)
+
+    def commit(self) -> None:
+        if self.used < self.shown:
+            for item in self.items[self.used:self.shown]:
+                self._canvas.itemconfigure(item, state="hidden")
+            self.geo[self.used:self.shown] = [None] * (self.shown - self.used)
+        self.shown = self.used
+
 
 class PianoRoll(tk.Canvas):
     """Time (x) x pitch (y) note view with rubber-band region selection."""
@@ -76,6 +165,10 @@ class PianoRoll(tk.Canvas):
     SEL_FILL = "#555a78"
     PLAYHEAD = "#ff5566"
 
+    #: above this many visible notes the roll stops drawing one item per note
+    #: and aggregates per pixel column (see _draw_notes_dense)
+    NOTE_BUDGET = 1500
+
     def __init__(self, master, on_select=None, height=170):
         super().__init__(master, height=height, bg=self.BG,
                          highlightthickness=0)
@@ -88,6 +181,32 @@ class PianoRoll(tk.Canvas):
         self.on_select = on_select
         self._drag = None                  # (mode, x0, data)
         self._pitch_lo, self._pitch_hi = 48, 84
+        self._redraw_id = None             # pending after_idle repaint
+        self._head = None                  # persistent playhead line item
+        self._head_geo = None
+        self._head_shown = False
+        self._head_top = False
+
+        # one item pool per layer: a redraw repositions instead of rebuilding
+        self._bands = _ItemPool(self, lambda: self.create_rectangle(
+            0, 0, 0, 0, fill=self.BAND, outline=""))
+        self._grid = _ItemPool(self, lambda: self.create_line(
+            0, 0, 0, 0, fill=self.GRID))
+        self._labels = _ItemPool(self, lambda: self.create_text(
+            0, 0, anchor="w", fill=self.TEXT, font=("", 7), text=""))
+        self._rects = _ItemPool(self, lambda: self.create_rectangle(
+            0, 0, 0, 0, fill=self.NOTE, outline="", width=0))
+        self._rects_sel = _ItemPool(self, lambda: self.create_rectangle(
+            0, 0, 0, 0, fill=self.NOTE_SEL, outline="", width=0))
+
+        # precreated so the notes always paint over the selection band
+        self._sel_rect = _ItemPool(self, lambda: self.create_rectangle(
+            0, 0, 0, 0, fill=self.SEL_FILL, stipple="gray25", outline="",
+            width=0))
+        self._sel_edges = _ItemPool(self, lambda: self.create_line(
+            0, 0, 0, 0, fill=self.NOTE_SEL, dash=(3, 2)))
+        self._sel_rect.precreate(1)
+        self._sel_edges.precreate(2)
 
         self.bind("<ButtonPress-1>", self._press)
         self.bind("<B1-Motion>", self._motion)
@@ -124,12 +243,52 @@ class PianoRoll(tk.Canvas):
 
     def set_playhead(self, t):
         self.playhead_t = t
-        self.delete("playhead")
-        x = self._x(t)
-        if self.MARGIN_L <= x <= self.MARGIN_L + self._plot_w():
-            self.create_line(x, self.MARGIN_T,
-                             x, self.MARGIN_T + self._plot_h(),
-                             fill=self.PLAYHEAD, width=2, tags="playhead")
+        self._move_playhead()
+
+    def clear_playhead(self):
+        self.playhead_t = None
+        self._move_playhead()
+
+    def _move_playhead(self):
+        """Move the one persistent playhead item (no delete/create per frame).
+
+        Writes to Tk only when the line actually moves, so a stationary
+        playhead costs nothing — during playback this is the only item that
+        changes, and it repaints in ~0.1 ms.
+        """
+        head = self._head
+        alive = head is not None
+        if alive:
+            try:
+                alive = self.type(head) == "line"
+            except tk.TclError:
+                alive = False
+        t = self.playhead_t
+        x = self._x(t) if t is not None else None
+        if x is not None and not (self.MARGIN_L
+                                  <= x <= self.MARGIN_L + self._plot_w()):
+            x = None                        # scrolled out of view
+        if x is None:
+            if alive and self._head_shown:
+                self.itemconfigure(head, state="hidden")
+                self._head_shown = False
+            return
+        y0 = self.MARGIN_T
+        geo = (x, y0, x, y0 + self._plot_h())
+        if not alive:
+            self._head = self.create_line(*geo, fill=self.PLAYHEAD, width=2,
+                                          tags="playhead")
+            self._head_geo, self._head_shown, self._head_top = geo, True, True
+            return
+        if self._head_geo != geo:
+            self.coords(head, *geo)
+            self._head_geo = geo
+        if not self._head_shown:
+            self.itemconfigure(head, state="normal")
+            self._head_shown = True
+        if not self._head_top:              # notes were added on top of it
+            self.tag_raise(head)
+            self._head_top = True
 
     # ---------------- coords ----------------
     # NB: tkinter widgets already own a `self._w` string attribute (the
@@ -147,10 +306,6 @@ class PianoRoll(tk.Canvas):
     def _t(self, x):
         span = self.view_end - self.view_start
         return self.view_start + (x - self.MARGIN_L) / self._plot_w() * span
-
-    def _y(self, pitch):
-        rows = max(1, self._pitch_hi - self._pitch_lo)
-        return self.MARGIN_T + (self._pitch_hi - pitch) / rows * self._plot_h()
 
     # ---------------- view ----------------
     def fit_view(self, notify=True):
@@ -171,71 +326,160 @@ class PianoRoll(tk.Canvas):
 
     # ---------------- drawing ----------------
     def redraw(self):
-        self.delete("all")
-        w, h = self._plot_w(), self._plot_h()
+        """Request a repaint.
+
+        Repaints are coalesced into one per idle cycle, so a burst of
+        <Motion>/<MouseWheel> events costs one redraw instead of one each —
+        the previous code rebuilt every canvas item per event.
+        """
+        if self._redraw_id is None:
+            self._redraw_id = self.after_idle(self._redraw_now)
+
+    def _redraw_now(self):
+        self._redraw_id = None
+        try:
+            self._draw()
+        except tk.TclError:
+            pass                            # window torn down mid-repaint
+
+    def _draw(self):
+        pw = max(50, self.winfo_width() - self.MARGIN_L - 6)
+        ph = max(30, self.winfo_height() - self.MARGIN_T - 4)
         rows = max(1, self._pitch_hi - self._pitch_lo)
-        row_h = h / rows
+        sy = ph / rows                                  # px per semitone
+        span = max(self.view_end - self.view_start, 1e-9)
+        sx = pw / span                                  # px per second
 
-        # octave bands + pitch labels
-        p = self._pitch_lo
-        while p <= self._pitch_hi:
-            y = self._y(p)
-            if p % 12 == 0:
-                self.create_rectangle(self.MARGIN_L, y - row_h,
-                                      self.MARGIN_L + w, y,
-                                      fill=self.BAND, outline="")
-                self.create_text(4, y - row_h / 2, anchor="w",
-                                 fill=self.TEXT, font=("", 7),
-                                 text=midi_to_name(max(0, min(127, p))))
-            p += 1
+        # While the user is dragging a selection the notes are not restyled
+        # and the band is drawn as bare edges: Tk repaints ~30 us per canvas
+        # item, so repainting a full-width stippled band plus every note it
+        # covers is what made rubber-banding crawl.  The real band + the note
+        # highlight land on release.
+        dragging = self._drag is not None and self._drag[0] == "select"
 
-        # time grid
+        pools = (self._bands, self._grid, self._labels,
+                 self._rects, self._rects_sel,
+                 self._sel_rect, self._sel_edges)
+        for pool in pools:
+            pool.begin()
+        self._draw_grid(pw, ph, sx)
+        self._draw_sel_band(ph, sx, edges_only=dragging)
+        self._draw_notes(pw, sx, sy, highlight=not dragging)
+        self._draw_borders(pw, ph)
+        for pool in pools:
+            pool.commit()
+        if any(pool.grew for pool in pools):
+            self._head_top = False          # new items went above the playhead
+            for pool in pools:
+                pool.grew = False
+        self._move_playhead()
+
+    def _draw_grid(self, pw, ph, sx):
+        """Octave bands, pitch labels, time grid + labels."""
+        ml, mt = self.MARGIN_L, self.MARGIN_T
+        top = self._pitch_hi
+        sy = ph / max(1, top - self._pitch_lo)
+        bands, labels, grid = self._bands, self._labels, self._grid
+        for p in range(self._pitch_lo, top + 1):
+            if p % 12:                      # only the Cs are worth labelling
+                continue
+            y = mt + (top - p) * sy
+            bands.place(ml, y - sy, ml + pw, y)
+            i = labels.place(4, y - sy / 2)
+            labels.style(i, text=midi_to_name(max(0, min(127, p))),
+                         anchor="w")
+
         step = self._nice_step(self.view_end - self.view_start)
-        t0 = (int(self.view_start / step) + 1) * step
-        t = t0
+        t = (int(self.view_start / step) + 1) * step
         while t < self.view_end:
-            x = self._x(t)
-            self.create_line(x, self.MARGIN_T, x, self.MARGIN_T + h,
-                             fill=self.GRID)
-            label = f"{t:.2f}".rstrip("0").rstrip(".") + "s"
-            self.create_text(x + 2, 2, anchor="nw", fill=self.TEXT,
-                             font=("", 7), text=label)
+            x = ml + (t - self.view_start) * sx
+            grid.place(x, mt, x, mt + ph)
+            i = labels.place(x + 2, 2)
+            labels.style(i, text=f"{t:.2f}".rstrip("0").rstrip(".") + "s",
+                         anchor="nw")
             t += step
 
-        # selection band
-        if self.sel:
-            a, b = self.sel
-            x0, x1 = self._x(a), self._x(b)
-            self.create_rectangle(x0, self.MARGIN_T, x1, self.MARGIN_T + h,
-                                  fill=self.SEL_FILL, stipple="gray25",
-                                  outline="")
-            for x in (x0, x1):
-                self.create_line(x, self.MARGIN_T, x, self.MARGIN_T + h,
-                                 fill=self.NOTE_SEL, dash=(3, 2))
+    def _draw_sel_band(self, ph, sx, edges_only=False):
+        edges = self._sel_edges
+        if not self.sel:
+            return                          # commit() hides both pools
+        ml, mt = self.MARGIN_L, self.MARGIN_T
+        a, b = self.sel
+        x0 = ml + (a - self.view_start) * sx
+        x1 = ml + (b - self.view_start) * sx
+        if not edges_only:
+            self._sel_rect.place(x0, mt, x1, mt + ph)
+        edges.place(x0, mt, x0, mt + ph)
+        edges.place(x1, mt, x1, mt + ph)
 
-        # notes (culled to the view)
-        for n in self.notes:
-            if n.end < self.view_start or n.start > self.view_end:
-                continue
-            x0 = max(self.MARGIN_L, self._x(n.start))
-            x1 = min(self.MARGIN_L + w, self._x(n.end))
-            if x1 - x0 < 2:
-                x1 = x0 + 2
-            y0 = self._y(n.pitch + 1) + 1
-            y1 = self._y(n.pitch) - 1
-            inside = self.sel and self.sel[0] <= n.start < self.sel[1]
-            self.create_rectangle(
-                x0, y0, x1, max(y1, y0 + 2),
-                fill=self.NOTE_SEL if inside else self.NOTE,
-                outline="", width=0)
+    def _draw_notes(self, pw, sx, sy, highlight=True):
+        ml, mt = self.MARGIN_L, self.MARGIN_T
+        top = self._pitch_hi
+        t0, t1 = self.view_start, self.view_end
+        sel = self.sel if highlight else None
+        a, b = sel if sel else (0.0, 0.0)
 
-        # borders
-        self.create_line(self.MARGIN_L, self.MARGIN_T,
-                         self.MARGIN_L, self.MARGIN_T + h, fill=self.GRID)
-        self.create_line(self.MARGIN_L, self.MARGIN_T,
-                         self.MARGIN_L + w, self.MARGIN_T, fill=self.GRID)
-        if self.playhead_t is not None:
-            self.set_playhead(self.playhead_t)
+        vis = [n for n in self.notes if n.end >= t0 and n.start <= t1]
+        if not vis:
+            return
+        if len(vis) > self.NOTE_BUDGET:
+            self._draw_notes_dense(vis, ml, mt, sx, sy, a, b)
+            return
+
+        right = ml + pw
+        plain, selected = self._rects, self._rects_sel
+        for n in vis:
+            x0 = ml + (n.start - t0) * sx
+            x1 = ml + (n.end - t0) * sx
+            if x0 < ml:
+                x0 = ml
+            if x1 > right:
+                x1 = right
+            if x1 - x0 < 2.0:
+                x1 = x0 + 2.0
+            y0 = mt + (top - n.pitch - 1) * sy + 1.0
+            y1 = mt + (top - n.pitch) * sy - 1.0
+            if y1 - y0 < 2.0:
+                y1 = y0 + 2.0
+            pool = selected if (sel and a <= n.start < b) else plain
+            pool.place(x0, y0, x1, y1)
+
+    def _draw_notes_dense(self, vis, ml, mt, sx, sy, a, b):
+        """Aggregate mode for whole-song views of a big MIDI.
+
+        Above NOTE_BUDGET notes the individual rectangles are sub-pixel wide
+        anyway, so the roll draws one item per (pixel column, run of adjacent
+        pitch rows) instead.  Visually the same smear, but the canvas item
+        count is bounded by the plot width instead of the note count.
+        """
+        cols: dict[int, list[int]] = {}
+        for n in vis:
+            cols.setdefault(int((n.start - self.view_start) * sx),
+                            []).append(n.pitch)
+        t0, marked = self.view_start, b > a
+        plain, selected = self._rects, self._rects_sel
+        for c in sorted(cols):
+            pitches = sorted(set(cols[c]))
+            pool = selected if marked and a <= t0 + c / sx < b else plain
+            lo = hi = pitches[0]
+            for p in pitches[1:]:
+                if p <= hi + 2:             # a 2-row gap is invisible at 1 px
+                    hi = p
+                    continue
+                self._dense_rect(pool, c, lo, hi, ml, mt, sy)
+                lo = hi = p
+            self._dense_rect(pool, c, lo, hi, ml, mt, sy)
+
+    def _dense_rect(self, pool, c, lo, hi, ml, mt, sy):
+        top = self._pitch_hi
+        x = ml + c
+        pool.place(x, mt + (top - hi - 1) * sy + 1.0,
+                   x + 2.0, mt + (top - lo) * sy - 1.0)
+
+    def _draw_borders(self, pw, ph):
+        ml, mt = self.MARGIN_L, self.MARGIN_T
+        self._grid.place(ml, mt, ml, mt + ph)
+        self._grid.place(ml, mt, ml + pw, mt)
 
     @staticmethod
     def _nice_step(span, target=10):
@@ -373,6 +617,7 @@ class MidiPlayerApp:
         self.mapper = InstrumentMapper(self.profile)
 
         self.key_labels: dict[str, tuple[tk.Label, str]] = {}
+        self._lit: dict[str, bool] = {}      # key-panel lamp state
         self._build_ui()
         self._poll_queue()
 
@@ -671,9 +916,10 @@ class MidiPlayerApp:
             messagebox.showerror("加载失败", str(e))
             return
         values = ["自动(主旋律)", "全部合并"]
+        tmap = build_tempo_map(self.mid)      # shared: one scan, not N
         for i, track in enumerate(self.mid.tracks):
             try:
-                r = parse_midi(self.mid, track=i)
+                r = parse_midi(self.mid, track=i, tmap=tmap)
                 cnt = len(r.notes)
                 if cnt:
                     avg = round(sum(x.pitch for x in r.notes) / cnt)
@@ -873,7 +1119,7 @@ class MidiPlayerApp:
         )
         self.events_total_time = events[-1].time if events else 0.0
         self.control.reset()
-        self.piano.playhead_t = None
+        self.piano.clear_playhead()
         self.play_btn.configure(state="disabled")
         self.pause_btn.configure(state="normal")
         self.stop_btn.configure(state="normal")
@@ -1000,8 +1246,7 @@ class MidiPlayerApp:
             self._aud_poll_id = None
         self.auditioner.stop()
         self.aud_btn.configure(text="🔊 试听(钢琴)")
-        self.piano.playhead_t = None
-        self.piano.delete("playhead")
+        self.piano.clear_playhead()
         if not quiet:
             self.status_var.set("试听结束" if finished else "就绪")
 
@@ -1009,12 +1254,38 @@ class MidiPlayerApp:
     # queue -> UI (main thread only)
     # ------------------------------------------------------------------
     def _poll_queue(self):
+        """Drain the worker queue; collapse a tick's worth of events into one
+        visual update.
+
+        Only the last transition per physical input matters for a lamp and
+        only the newest event matters for the playhead / progress bar / status
+        line, so a dense passage costs a handful of Tcl calls per tick instead
+        of 5-6 per event.
+        """
+        newest = last_down = None
+        lights: dict[str, str] = {}
         try:
             while True:
                 kind, payload = self.q.get_nowait()
+                if kind == "event":
+                    lights[payload.identifier] = payload.action
+                    newest = payload
+                    if payload.action == "down":
+                        last_down = payload
+                    continue
+                if lights:                      # flush before a state change
+                    self._light(lights)
+                    lights = {}
+                if newest is not None:
+                    self._transport(newest, last_down)
+                    newest = last_down = None
                 self._handle_msg(kind, payload)
         except queue.Empty:
             pass
+        if lights:
+            self._light(lights)
+        if newest is not None:
+            self._transport(newest, last_down)
         self.root.after(30, self._poll_queue)
 
     def _handle_msg(self, kind, payload):
@@ -1025,8 +1296,6 @@ class MidiPlayerApp:
             self.status_var.set(payload)
         elif kind == "playing":
             self.status_var.set("演奏中...")
-        elif kind == "event":
-            self._on_event(payload)
         elif kind == "done":
             self.status_var.set("演奏结束")
             self._append_preview("=" * 62 + "\n" + payload)
@@ -1042,17 +1311,23 @@ class MidiPlayerApp:
             self.pause_btn.configure(state="disabled")
             self.stop_btn.configure(state="disabled")
             self._unlight_all()
-            self.piano.playhead_t = None
-            self.piano.redraw()
+            self.piano.clear_playhead()
 
-    def _on_event(self, ev):
-        entry = self.key_labels.get(ev.identifier)
-        if entry:
+    def _light(self, lights: dict):
+        """Lamp the key panel; `lights` is {identifier: last action}."""
+        for ident, action in lights.items():
+            entry = self.key_labels.get(ident)
+            if entry is None:
+                continue
+            lit = action == "down"
+            if self._lit.get(ident) == lit:
+                continue                    # already in that state
+            self._lit[ident] = lit
             lbl, default_bg = entry
-            if ev.action == "down":
-                lbl.configure(bg="#ffb347")
-            else:
-                lbl.configure(bg=default_bg)
+            lbl.configure(bg=LIT_BG if lit else default_bg)
+
+    def _transport(self, ev, last_down):
+        """Once-per-tick playhead / progress / status update."""
         if self.events_total_time > 0:
             frac = min(1.0, ev.time / self.events_total_time)
             self.progress.configure(value=int(frac * 1000))
@@ -1060,14 +1335,15 @@ class MidiPlayerApp:
                 f"{ev.time:.1f}s / {self.events_total_time:.1f}s")
         # playhead maps back to the ORIGINAL song timeline
         self.piano.set_playhead(ev.time + self.clip_offset)
-        if ev.action == "down" and ev.kind == "key" and \
-                0 <= ev.note_index < len(self.mapped):
-            m = self.mapped[ev.note_index]
+        if last_down is not None and \
+                0 <= last_down.note_index < len(self.mapped):
+            m = self.mapped[last_down.note_index]
             self.status_var.set(
                 f"♪ {m.note.name} -> {m.combo.display()}   "
-                f"({ev.time:.1f}s / {self.events_total_time:.1f}s)")
+                f"({last_down.time:.1f}s / {self.events_total_time:.1f}s)")
 
     def _unlight_all(self):
+        self._lit.clear()
         for lbl, bg in self.key_labels.values():
             lbl.configure(bg=bg)
 

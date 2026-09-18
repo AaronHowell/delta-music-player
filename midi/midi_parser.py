@@ -174,13 +174,20 @@ def parse_merged(mid: mido.MidiFile) -> ParseResult:
     )
 
 
-def parse_track(mid: mido.MidiFile, index: int) -> ParseResult:
-    """Parse a single track with our own tempo map built from ALL tracks."""
+def parse_track(
+    mid: mido.MidiFile, index: int, tmap: Optional[TempoMap] = None
+) -> ParseResult:
+    """Parse a single track with our own tempo map built from ALL tracks.
+
+    ``tmap`` lets a caller scoring many tracks build the map once instead of
+    rescanning every track per call (see choose_melody_track).
+    """
     if not 0 <= index < len(mid.tracks):
         raise ValueError(
             f"track {index} out of range (file has {len(mid.tracks)} tracks)"
         )
-    tmap = build_tempo_map(mid)
+    if tmap is None:
+        tmap = build_tempo_map(mid)
     collector = _NoteCollector(tmap=tmap)
     tick = 0
     for msg in mid.tracks[index]:
@@ -240,10 +247,11 @@ def choose_melody_track(mid: mido.MidiFile) -> ParseResult:
     """
     best: Optional[Tuple[Tuple[float, int, int], ParseResult]] = None
     stats: List[dict] = []
+    tmap = build_tempo_map(mid)          # once, not once per candidate track
     for i, track in enumerate(mid.tracks):
         if _is_drum_track(track):
             continue
-        result = parse_track(mid, i)
+        result = parse_track(mid, i, tmap)
         if len(result.notes) < 4:
             continue
         mean_pitch = sum(n.pitch for n in result.notes) / len(result.notes)
@@ -277,13 +285,19 @@ def choose_melody_track(mid: mido.MidiFile) -> ParseResult:
 # --------------------------------------------------------------------------
 
 def parse_midi(
-    mid: mido.MidiFile, track: Optional[int] = None, auto_track: bool = True
+    mid: mido.MidiFile,
+    track: Optional[int] = None,
+    auto_track: bool = True,
+    tmap: Optional[TempoMap] = None,
 ) -> ParseResult:
     """track=N  -> parse that track only
     track=None -> auto-select melody track when the file has multiple tracks
-                  (auto_track=True), else merge everything."""
+                  (auto_track=True), else merge everything.
+
+    ``tmap`` is an optional pre-built tempo map, so callers that parse many
+    tracks (the GUI's per-track preview) can share one."""
     if track is not None:
-        return parse_track(mid, track)
+        return parse_track(mid, track, tmap)
     if len(mid.tracks) > 1 and auto_track:
         return choose_melody_track(mid)
     return parse_merged(mid)
